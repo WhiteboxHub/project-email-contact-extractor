@@ -1,7 +1,10 @@
+
 import yaml
 import logging
 import os
-from email_client import EmailClient
+from datetime import datetime
+from typing import List, Dict, Tuple
+from mail_client import EmailClient  # Updated import
 from extractor import ContactExtractor
 from filters import EmailFilter
 from storage import StorageManager
@@ -11,125 +14,174 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()
+        logging.StreamHandler(),
+        logging.FileHandler(f'email_processor_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
     ]
 )
+logger = logging.getLogger("main")
 
-def load_accounts(filter_tags=None):
-    try:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        accounts_path = os.path.join(base_dir, 'config', 'accounts.yaml')
-        with open(accounts_path, 'r') as file:
-            all_accounts = yaml.safe_load(file)['accounts']
-            filtered_accounts = [
+class EmailProcessor:
+    def __init__(self):
+        self.stats = {
+            'accounts_processed': 0,
+            'total_emails_fetched': 0,
+            'total_recruiter_emails': 0,
+            'total_contacts_extracted': 0,
+            'start_time': datetime.now(),
+            'account_details': []
+        }
+
+    def load_accounts(self, filter_tags: List[str] = None) -> List[Dict]:
+        """Load email accounts from configuration"""
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            accounts_path = os.path.join(base_dir, 'config', 'accounts.yaml')
+            logger.debug(f"Loading accounts from: {accounts_path}")
+
+            if not os.path.exists(accounts_path):
+                logger.error(f"accounts.yaml not found at: {accounts_path}")
+                return []
+
+            with open(accounts_path, 'r') as file:
+                config_data = yaml.safe_load(file)
+
+            if not config_data or 'accounts' not in config_data:
+                logger.error("Invalid accounts.yaml format. Missing 'accounts' key.")
+                return []
+
+            all_accounts = config_data['accounts']
+            return [
                 acc for acc in all_accounts
                 if acc.get('active', True) and
                 (not filter_tags or any(tag in acc.get('tags', []) for tag in filter_tags))
             ]
-            return filtered_accounts
-    except Exception as e:
-        logging.error(f"Error loading accounts: {str(e)}")
-        return []
+        except Exception as e:
+            logger.error(f"Error loading accounts: {str(e)}")
+            return []
 
-def process_account(account, storage, extractor, email_filter, batch_size=100):
-    email_client = EmailClient(account)
-    if not email_client.connect():
-        logging.error(f"Failed to connect to {account['email']}")
-        return
+    def process_account(self, account: Dict, extractor: ContactExtractor, email_filter: EmailFilter) -> Dict:
+        """Process a single email account"""
+        account_stats = {
+            'email': account['email'],
+            'emails_fetched': 0,
+            'recruiter_emails': 0,
+            'contacts_extracted': 0,
+            'error': None,
+            'total_in_mailbox': 0
+        }
 
-    try:
-        last_run = storage.load_last_run()
-        account_last_run = last_run.get(account['email'], {})
-        last_uid = account_last_run.get('last_uid')
+        try:
+            logger.info(f"\n{'='*50}\nProcessing account: {account['email']}\n{'='*50}")
 
+            # Initialize clients
+            email_client = EmailClient(account)
+            storage = StorageManager()
 
-        logging.info(f"Starting batch processing for {account['email']} (last_uid={last_uid})")
-        start_index = 0
-        max_uid_seen = int(last_uid) if last_uid else 0
-        total_extracted = 0
+            if not email_client.connect():
+                raise ConnectionError(f"Failed to connect to {account['email']}")
 
-        while True:
-            emails, next_start_index = email_client.fetch_emails(
-                since_uid=last_uid, batch_size=batch_size, start_index=start_index
+            # Fetch emails
+            emails, total_in_mailbox = email_client.fetch_emails(
+                limit=account.get('fetch_limit', 50),
+                mark_as_read=account.get('mark_as_read', False)
             )
+            account_stats['emails_fetched'] = len(emails)
+            account_stats['total_in_mailbox'] = total_in_mailbox
+            self.stats['total_emails_fetched'] += len(emails)
+
             if not emails:
-                logging.info(f"No more emails to process for {account['email']} (start_index={start_index})")
-                break
+                logger.info("No emails fetched from this account")
+                return account_stats
 
-            logging.info(f"Fetched {len(emails)} emails for {account['email']} (batch {start_index // batch_size + 1})")
-
+            # Filter recruiter emails
             recruiter_emails = email_filter.filter_recruiter_emails(emails, extractor)
-            logging.info(f"Filtered {len(recruiter_emails)} recruiter emails in this batch for {account['email']}")
+            account_stats['recruiter_emails'] = len(recruiter_emails)
+            self.stats['total_recruiter_emails'] += len(recruiter_emails)
+            logger.info(f"Found {len(recruiter_emails)} recruiter emails")
 
+            # Extract contacts
             contacts = []
             for email_data in recruiter_emails:
                 try:
-                    contact = extractor.extract_contacts(email_data['message'], source_email=account['email'])
+                    contact = extractor.extract_contacts(
+                        email_data['message'], 
+                        source_email=account['email']
+                    )
                     if contact.get('email'):
-                        logging.info(f"Extracted contact: {contact}")
                         contacts.append(contact)
-                    else:
-                        logging.info(f"Skipped non-recruiter email: {email_data['message'].get('From')}")
                 except Exception as e:
-                    logging.error(f"Error extracting contact: {str(e)}")
+                    logger.error(f"Error extracting contact: {str(e)}")
                     continue
 
-            contacts = deduplicate_contacts(contacts)
+            account_stats['contacts_extracted'] = len(contacts)
+            self.stats['total_contacts_extracted'] += len(contacts)
+
+            # Save contacts
             if contacts:
-                logging.info(f"Extracted {len(contacts)} contacts in this batch for {account['email']}")
-                storage.save_contacts(None, contacts)
-                total_extracted += len(contacts)
+                storage.save_contacts(account['email'], contacts)
+                logger.info(f"Saved {len(contacts)} contacts to storage")
 
-            # Update max_uid_seen
-            batch_uids = [int(email['uid']) for email in emails if email.get('uid')]
-            if batch_uids:
-                max_uid_seen = max(max_uid_seen, max(batch_uids))
-                storage.save_last_run(account['email'], str(max_uid_seen))
-                logging.info(f"Updated last_uid for {account['email']} to {max_uid_seen}")
+            return account_stats
 
-            if not next_start_index:
-                break
-            start_index = next_start_index
+        except Exception as e:
+            logger.error(f"Error processing account {account['email']}: {str(e)}")
+            account_stats['error'] = str(e)
+            return account_stats
+        finally:
+            email_client.disconnect()
+            self.stats['account_details'].append(account_stats)
+            self.stats['accounts_processed'] += 1
 
-        logging.info(f"Completed processing for {account['email']}. Total contacts extracted: {total_extracted}")
-
-    except Exception as e:
-        logging.error(f"Error processing account {account['email']}: {str(e)}")
-    finally:
-        email_client.disconnect()
-        logging.info(f"Disconnected from {account['email']}")
-
-def deduplicate_contacts(contacts):
-    seen = set()
-    unique_contacts = []
-    for contact in contacts:
-        key = (contact['email'], contact.get('company', ''))
-        if key not in seen:
-            seen.add(key)
-            unique_contacts.append(contact)
-        else:
-            logging.info(f"Duplicate contact, not saving: {contact['email']}")
-    return unique_contacts
+    def print_summary(self):
+        """Print detailed processing summary"""
+        duration = datetime.now() - self.stats['start_time']
+        success_rate = (self.stats['total_contacts_extracted'] / self.stats['total_recruiter_emails'] * 100 
+                       if self.stats['total_recruiter_emails'] > 0 else 0)
+        
+        logger.info("\n" + "="*60)
+        logger.info(" PROCESSING SUMMARY ".center(60, "="))
+        logger.info("="*60)
+        
+        # Overall stats
+        logger.info(f"\nTotal processing time: {duration}")
+        logger.info(f"Accounts processed: {self.stats['accounts_processed']}")
+        logger.info(f"Total emails in mailboxes: {sum(acc.get('total_in_mailbox', 0) for acc in self.stats['account_details'])}")
+        logger.info(f"Total emails fetched: {self.stats['total_emails_fetched']}")
+        logger.info(f"Total recruiter emails found: {self.stats['total_recruiter_emails']}")
+        logger.info(f"Total contacts extracted: {self.stats['total_contacts_extracted']}")
+        logger.info(f"Success rate: {success_rate:.2f}%")
+        
+        # Per-account details
+        logger.info("\nAccount Details:")
+        for acc in self.stats['account_details']:
+            logger.info(f"\nAccount: {acc['email']}")
+            logger.info(f"- Emails in mailbox: {acc.get('total_in_mailbox', 'N/A')}")
+            logger.info(f"- Emails fetched: {acc['emails_fetched']}")
+            logger.info(f"- Recruiter emails: {acc['recruiter_emails']}")
+            logger.info(f"- Contacts extracted: {acc['contacts_extracted']}")
+            if acc['error']:
+                logger.error(f"- ERROR: {acc['error']}")
 
 def main():
-    logging.info("Starting email contact extraction")
-
-    accounts = load_accounts(filter_tags=["job_search"])
-    # accounts = load_accounts()  # Uncomment to process all active accounts
-
-    if not accounts:
-        logging.error("No active accounts found matching criteria")
-        return
-
-    storage = StorageManager()
+    """Main execution function"""
+    logger.info("Starting email contact extraction")
+    
+    processor = EmailProcessor()
     extractor = ContactExtractor()
     email_filter = EmailFilter()
-
+    
+    # Load and process accounts
+    accounts = processor.load_accounts(filter_tags=["job_search"])
+    if not accounts:
+        logger.error("No active accounts found matching criteria")
+        return
+    
     for account in accounts:
-        logging.info(f"Processing account: {account['email']}")
-        process_account(account, storage, extractor, email_filter)
-
-    logging.info("Email contact extraction completed")
+        processor.process_account(account, extractor, email_filter)
+    
+    # Print final summary
+    processor.print_summary()
+    logger.info("Email contact extraction completed")
 
 if __name__ == "__main__":
     main()

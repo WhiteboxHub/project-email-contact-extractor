@@ -1,203 +1,156 @@
+
 import re
 import logging
-from email.utils import parseaddr
-from urllib.parse import urlparse
-import yaml
 import os
-from email_client import EmailClient
-import phonenumbers
+import yaml
+import spacy
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger("extractor")
 
 class ContactExtractor:
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
         self.rules = self._load_rules()
+        self.recruiter_keywords = self.rules.get("recruiter_keywords", [])
+        self.signature_patterns = self.rules.get("signature_patterns", {})
+        self.linkedin_patterns = self.rules.get("linkedin_patterns", [])
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            logger.error(f"Error loading spaCy model: {e}")
+            self.nlp = None
+
+        logger.info(f"Loaded rules: {self.rules.keys()}")
 
     def _load_rules(self):
         try:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             rules_path = os.path.join(base_dir, 'config', 'rules.yaml')
             with open(rules_path, 'r') as file:
-                rules = yaml.safe_load(file)
-                self.logger.info(f"Loaded rules: {rules.keys()}")
-                return rules
+                return yaml.safe_load(file)
         except Exception as e:
-            self.logger.error(f"Error loading rules: {str(e)}")
+            logger.error(f"Error loading rules: {e}")
             return {}
 
-    def is_recruiter_email(self, email_message):
-        subject = self._get_email_subject(email_message)
-        from_email = self._get_sender_email(email_message)
-        sender_name = parseaddr(email_message.get('From', ''))[0]
-        body = self._get_email_body(email_message)
-
-        # Defensive: always use a list
-        recruiter_keywords = self.rules.get('recruiter_keywords') or []
-        if not recruiter_keywords:
-            self.logger.error("No recruiter_keywords found in rules. Please check rules.yaml.")
+    def _matches_blacklist(self, email: str) -> bool:
+        if not email:
             return False
-
-        subject_match = any(keyword.lower() in subject.lower() for keyword in recruiter_keywords)
-        name_match = any(keyword.lower() in sender_name.lower() for keyword in recruiter_keywords)
-        email_match = any(keyword.lower() in from_email.lower() for keyword in recruiter_keywords)
-        body_match = any(keyword.lower() in body.lower() for keyword in recruiter_keywords)
-
-        # Check sender domain against domain strategy
-        domain = from_email.split('@')[-1].lower() if '@' in from_email else ''
-        domain_valid = self._validate_domain(domain)
-
-        # Exclude generic job board/system emails
-        # Use always_blacklist patterns from rules.yaml for generic sender exclusion
-        generic_patterns = self.rules.get('always_blacklist', [])
-        for pattern in generic_patterns:
-            if re.fullmatch(pattern, from_email):
-                self.logger.info(f"Skipping generic sender: {from_email} (pattern: {pattern})")
-                return False
-
-        if not (subject_match or name_match or email_match or body_match):
-            self.logger.info(f"Email from {from_email} skipped: no recruiter keywords in subject, sender name, sender email, or body.")
-        if not domain_valid:
-            self.logger.info(f"Email from {from_email} skipped: domain '{domain}' not valid per rules.")
-
-        return (subject_match or name_match or email_match or body_match) and domain_valid
-
-    def _validate_domain(self, domain):
-        if not domain:
-            return False
-
-        strategy = self.rules.get('domain_strategy', 'hybrid')
-
-        # Check always_blacklist first
-        for pattern in self.rules.get('always_blacklist') or []:
-            if re.fullmatch(pattern, domain):
-                return False
-
-        # Check always_whitelist
-        for pattern in self.rules.get('always_whitelist') or []:
-            if re.fullmatch(pattern, domain):
+        for pattern in self.rules.get("always_blacklist", []):
+            if re.search(pattern, email, re.IGNORECASE):
+                logger.info(f"Skipping generic sender: {email} (pattern: {pattern})")
                 return True
+        return False
 
-        # Apply selected strategy
-        if strategy == 'whitelist':
-            return any(
-                re.fullmatch(pattern, domain)
-                for pattern in self.rules.get('whitelist_domains') or []
-            )
-        elif strategy == 'blacklist':
-            return not any(
-                re.fullmatch(pattern, domain)
-                for pattern in self.rules.get('blacklist_patterns') or []
-            )
-        else:  # hybrid - must be in whitelist AND not in blacklist
-            whitelisted = any(
-                re.fullmatch(pattern, domain)
-                for pattern in self.rules.get('whitelist_domains') or []
-            )
-            blacklisted = any(
-                re.fullmatch(pattern, domain)
-                for pattern in self.rules.get('blacklist_patterns') or []
-            )
-            return whitelisted and not blacklisted
+    def _extract_linkedin(self, text: str) -> Optional[str]:
+        """Extract LinkedIn profile URL from text"""
+        for pattern in self.linkedin_patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                # Clean up the URL
+                url = matches[0].strip()
+                if not url.startswith(('http://', 'https://')):
+                    url = f"https://{url}"
+                return url.split('?')[0]  # Remove any query parameters
+        return None
 
-    def extract_contacts(self, email_message, source_email=None):
-        from_header = email_message.get('From', '')
-        sender_name, sender_email = parseaddr(from_header)
-        # Clean the sender name
-        sender_name = ' '.join(
-            part.capitalize() for part in re.split(r'[^a-zA-Z]', sender_name) if part
+    def _validate_email(self, email: str) -> bool:
+        """Basic email validation"""
+        if not email:
+            return False
+        return bool(re.match(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", email))
+
+    def _validate_phone(self, phone: str) -> bool:
+        """Basic phone number validation"""
+        if not phone:
+            return False
+        # Remove any non-digit characters
+        digits = re.sub(r"[^\d]", "", phone)
+        return len(digits) >= 7  # Minimum valid phone number length
+
+    def _clean_phone(self, phone: str) -> str:
+        """Format phone number consistently"""
+        if not phone:
+            return ""
+        # Remove all non-digit characters
+        digits = re.sub(r"[^\d]", "", phone)
+        # Format as (XXX) XXX-XXXX if US number
+        if len(digits) == 10:
+            return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+        return digits
+
+    def _clean_name(self, name: str) -> str:
+        """Clean and normalize names"""
+        if not name:
+            return ""
+        # Remove extra whitespace and special characters
+        name = re.sub(r"[^\w\s-]", "", name.strip())
+        # Title case the name
+        return name.title()
+
+    def extract_contacts(self, text: str, source_email: str = None) -> Dict[str, Any]:
+        if not self.nlp:
+            raise RuntimeError("spaCy NLP model not initialized.")
+
+        # Ensure text is a string
+        if isinstance(text, dict):
+            logger.warning("Input to extract_contacts() was a dict; converting to string")
+            text = str(text)
+
+        doc = self.nlp(text)
+        name, email, phone, company, linkedin = None, None, None, None, None
+
+        # Extract name and company using NLP
+        for ent in doc.ents:
+            if ent.label_ == "PERSON" and not name:
+                name = self._clean_name(ent.text)
+            elif ent.label_ == "ORG" and not company:
+                company = ent.text.strip()
+
+        # Extract email - more robust pattern
+        email_matches = re.findall(
+            r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", 
+            text
         )
-        # Get email body for further extraction
-        body = self._get_email_body(email_message)
-        # Extract additional info from body/signature
-        phone = self._extract_phone(body)
-        company = self._extract_company(body, sender_email)
-        website = self._extract_website(body)
-        linkedin_id = self._extract_linkedin(body)
+        if email_matches:
+            for em in email_matches:
+                if not self._matches_blacklist(em) and self._validate_email(em):
+                    email = em.lower()
+                    break
+
+        # Extract phone - more comprehensive patterns
+        phone_patterns = self.signature_patterns.get("phone", [])
+        for pattern in phone_patterns:
+            match = re.search(pattern, text)
+            if match:
+                phone_candidate = match.group()
+                if self._validate_phone(phone_candidate):
+                    phone = self._clean_phone(phone_candidate)
+                    break
+
+        # Extract LinkedIn profile
+        linkedin = self._extract_linkedin(text)
+
+        # Fallback: If no company found via NLP, look for common patterns
+        if not company:
+            company_patterns = [
+                r"at\s+([A-Z][a-zA-Z0-9&\-\.\s]+)(?=\s|$)",
+                r"from\s+([A-Z][a-zA-Z0-9&\-\.\s]+)(?=\s|$)",
+                r"company:\s*([^\n\r]+)",
+                r"firm:\s*([^\n\r]+)"
+            ]
+            for pattern in company_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    company_candidate = match.group(1).strip()
+                    if len(company_candidate.split()) < 5:  # Avoid long false positives
+                        company = company_candidate
+                        break
+
         return {
-            'name': sender_name or None,
-            'email': sender_email.lower() if sender_email else None,
-            'phone': phone,
-            'company': company,
-            'website': website,
-            'source': source_email.lower() if source_email else None,
-            'linkedin_id': linkedin_id
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "company": company,
+            "linkedin": linkedin,
+            "source": source_email
         }
-
-    def _get_email_subject(self, email_message):
-        subject = email_message.get('Subject', '')
-        return EmailClient.clean_text(subject)
-
-    def _get_sender_email(self, email_message):
-        from_header = email_message.get('From', '')
-        _, sender_email = parseaddr(from_header)
-        return sender_email.lower()
-
-    def _get_email_body(self, email_message):
-        body = ""
-        if email_message.is_multipart():
-            for part in email_message.walk():
-                content_type = part.get_content_type()
-                if content_type == 'text/plain':
-                    body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-        else:
-            body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
-        return body
-
-    def _extract_phone(self, text):
-        for pattern in self.rules.get('signature_patterns', {}).get('phone') or []:
-            for match in re.finditer(pattern, text):
-                phone = match.group(0)
-                # Try to parse and format the phone number
-                try:
-                    # You can specify a default region, e.g., 'US' or 'IN'
-                    parsed = phonenumbers.parse(phone, "US")
-                    if phonenumbers.is_valid_number(parsed):
-                        # Format to E.164: +1234567890
-                        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-                except phonenumbers.NumberParseException:
-                    continue
-        return None
-
-    def _extract_company(self, text, sender_email):
-        # First try to find company name in signature
-        company_patterns = [
-            r'at\s+([A-Z][a-zA-Z\s&]+)',
-            r'([A-Z][a-zA-Z\s&]+)\s*Inc',
-            r'([A-Z][a-zA-Z\s&]+)\s*LLC',
-        ]
-        
-        for pattern in company_patterns:
-            match = re.search(pattern, text)
-            if match:
-                return match.group(1).strip()
-        
-        # Fallback to domain name
-        if sender_email and '@' in sender_email:
-            domain = sender_email.split('@')[1]
-            return domain.split('.')[0].capitalize()
-        
-        return None
-
-    def _extract_website(self, text):
-        url_pattern = r'https?://[^\s/$.?#].[^\s]*'
-        matches = re.findall(url_pattern, text)
-        for url in matches:
-            parsed = urlparse(url)
-            if parsed.netloc and 'linkedin.com' not in parsed.netloc:
-                return url
-        return None
-
-    def _extract_linkedin(self, text):
-        # Look for LinkedIn URLs in the text
-        linkedin_pattern = r'https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)'
-        match = re.search(linkedin_pattern, text)
-        if match:
-            return match.group(1)  # This is the LinkedIn ID
-        # Fallback to previous patterns if needed
-        for pattern in self.rules.get('signature_patterns', {}).get('linkedin', []):
-            match = re.search(pattern, text)
-            if match:
-                # Try to extract the ID from the matched URL
-                id_match = re.search(r'linkedin\.com/in/([a-zA-Z0-9\-_]+)', match.group(0))
-                if id_match:
-                    return id_match.group(1)
-        return None
