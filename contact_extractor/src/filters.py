@@ -1,24 +1,21 @@
-import re
-import logging
-from typing import List, Dict, Any
+import joblib # type: ignore
+import os
 
-from extractor import ContactExtractor
+class MLRecruiterFilter:
+    def __init__(self, model_dir):
+        self.classifier = joblib.load(os.path.join(model_dir, "classifier.pkl"))
+        self.vectorizer = joblib.load(os.path.join(model_dir, "vectorizer.pkl"))
 
-class EmailFilter:
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
+    def is_recruiter(self, subject, body, from_email):
+        features = self.vectorizer.transform([f"{subject} {body} {from_email}"])
+        return self.classifier.predict(features)[0] == 1
 
-    def filter_recruiter_emails(self, emails: List[Dict[str, Any]], extractor: ContactExtractor) -> List[Dict[str, Any]]:
-        """Filter emails to only include recruiter/vendor emails"""
-        recruiter_emails = []
+    def filter_recruiter_emails(self, emails, extractor):
+        filtered = []
         for email_data in emails:
-            try:
-                if extractor.is_recruiter_email(email_data['message']):
-                    self.logger.info(f"Recruiter/vendor email detected: {email_data['message'].get('From')}")
-                    recruiter_emails.append(email_data)
-                else:
-                    self.logger.info(f"Non-recruiter email skipped: {email_data['message'].get('From')}")
-            except Exception as e:
-                self.logger.error(f"Error filtering email: {str(e)}")
-                continue
-        return recruiter_emails
+            subject = email_data['message'].get('Subject', '')
+            body = extractor.clean_body(extractor._get_email_body(email_data['message']))
+            from_email = email_data['message'].get('From', '')
+            if self.is_recruiter(subject, body, from_email):
+                filtered.append(email_data)
+        return filtered

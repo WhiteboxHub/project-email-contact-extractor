@@ -2,8 +2,8 @@ import yaml
 import logging
 import os
 from email_client import EmailClient
-from extractor import ContactExtractor
-from filters import EmailFilter
+from extractor import NERContactExtractor
+from filters import MLRecruiterFilter
 from storage import StorageManager
 
 # Configure logging
@@ -122,8 +122,8 @@ def main():
         return
 
     storage = StorageManager()
-    extractor = ContactExtractor()
-    email_filter = EmailFilter()
+    extractor = NERContactExtractor()
+    email_filter = MLRecruiterFilter(model_dir="../models")
 
     for account in accounts:
         logging.info(f"Processing account: {account['email']}")
