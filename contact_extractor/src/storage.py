@@ -16,7 +16,9 @@ class StorageManager:
         os.makedirs(self.data_dir, exist_ok=True)
 
     def save_contacts(self, email_account: str, contacts: list):
-        """Save contacts to a single CSV file (output.csv), skipping duplicates already saved"""
+        """Save contacts to a single CSV file (output.csv), skipping duplicates already saved.
+        Also, ensure 'source' field is set to the source email (email_account) if not present.
+        """
         if not contacts:
             self.logger.info(f"No contacts to save for {email_account}")
             return
@@ -53,6 +55,9 @@ class StorageManager:
                     if email in existing_emails:
                         self.logger.info(f"Duplicate contact already saved, skipping: {email}")
                         continue
+                    # Ensure 'source' field is set to the source email (email_account)
+                    if not contact.get('source'):
+                        contact['source'] = email_account.lower()
                     if contact.get('phone'):
                         contact['phone'] = "'" + contact['phone']
                     contact['extracted_date'] = datetime.now().isoformat()

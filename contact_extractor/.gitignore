@@ -5,7 +5,9 @@ __pycache__/
 # *.txt
 *.csv
 *.json
-
+*.pkl
 config/
 src/__pycache__/
-
+data/
+models/
+src/generate_labeled_emails.py

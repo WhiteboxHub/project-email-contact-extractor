@@ -1,4 +1,4 @@
-## Getting Started with Contacts Extractor
+## Getting Started with Contacts Extractor By NER Models
 
 1. **Clone this repository:**
    ```
@@ -23,13 +23,25 @@
    ```
    pip install -r requirements.txt
    ```
+6. **Generate labeled training data:**
+   ```
+   python src/generate_labeled_emails.py
+   ```
+   This will create `labeled_emails.csv` in the `data/` folder.
 
-6. **Run the extractor and monitor progress in the console:**
+7. **Train the recruiter/junk classifier:**
+   ```
+   python src/train_classifier.py
+   ```
+   This uses the generated `labeled_emails.csv` to train a logistic regression model for recruiter/vendor email detection.
+
+8. **Run the extractor and monitor progress in the console:**
    ```
    python src/main.py
    ```
+   The output with extracted contacts will be saved in `data/output.csv`.
 
----
+
 
 ### Contributors
 
