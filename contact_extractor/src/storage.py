@@ -16,6 +16,8 @@ class StorageManager:
         os.makedirs(self.data_dir, exist_ok=True)
 
     def save_contacts(self, email_account: str, contacts: list):
+        print("CONTACTS RECEIVED FOR SAVING:", contacts)  
+
         """Save contacts to a single CSV file (output.csv), skipping duplicates already saved.
         Also, ensure 'source' field is set to the source email (email_account) if not present.
         """
@@ -41,8 +43,8 @@ class StorageManager:
         try:
             with open(output_csv, 'a', newline='', encoding='utf-8') as csvfile:
                 fieldnames = [
-                    'name', 'email', 'phone', 'company', 
-                    'website', 'source', 'linkedin_id', 'extracted_date'
+                    'full_name', 'email', 'phone', 'company_name', 
+                    'website', 'source_email', 'linkedin_id', 'extracted_date'
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 if not file_exists:
