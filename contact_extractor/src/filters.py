@@ -1,27 +1,3 @@
-# import joblib # type: ignore
-# import os
-
-# class MLRecruiterFilter:
-#     def __init__(self, model_dir):
-#         self.classifier = joblib.load(os.path.join(model_dir, "classifier.pkl"))
-#         self.vectorizer = joblib.load(os.path.join(model_dir, "vectorizer.pkl"))
-
-#     def is_recruiter(self, subject, body, from_email):
-#         features = self.vectorizer.transform([f"{subject} {body} {from_email}"])
-#         return self.classifier.predict(features)[0] == 1
-
-#     def filter_recruiter_emails(self, emails, extractor):
-#         filtered = []
-#         for email_data in emails:
-#             subject = email_data['message'].get('Subject', '')
-#             body = extractor.clean_body(extractor._get_email_body(email_data['message']))
-#             from_email = email_data['message'].get('From', '')
-#             if self.is_recruiter(subject, body, from_email):
-#                 filtered.append(email_data)
-#         return filtered
-
-
-
 import joblib
 import os
 import re
@@ -62,6 +38,48 @@ class MLRecruiterFilter:
             "microsoft.com", "apple.com"
         }
 
+        self.exact_email_blacklist = {
+            "teamzoom@zoom.us", "ops@cluso.com", "recruiter@softquip.com",
+            "requirements@gainamerica.net", "assistant@glider.ai",
+            "good-people@mail.beehiiv.com", "echosign@echosign.com",
+            "aggregated@lensa.com", "truthteam@email.truthsocial.com",
+            "remove@greattechglobal.com", "username@narwal.ai.",
+            "wi3351252t@wipro.com"
+        }
+
+        self.blacklist_regex_patterns = [
+            r"^image.*\.(png|jpg)@.*",
+            r"^team@.*",
+            r".*recruiting.*",
+            r".*communications.*",
+            r".*data@.*",
+            r".*marketing.*",
+            r".*customer.*",
+            r".*enterprise.*",
+            r".*@txt\.voice\.google\.com",
+            r"^inmail-.*",
+            r"^echosign@.*",
+            r"^dse_.*",
+            r".*@email\.shopify\.com",
+            r".*zrc-ptv.*",
+            r".*ltxstudio@.*",
+            r".*aggregated@.*",
+            r".*truthteam@.*",
+            r".*customercare@.*",
+            r".*hello@v3\.idibu\.com",
+            r".*@linkedin\.com",
+            r".*@e\.linkedin\.com",
+            r".*@cube-hub\.com",
+            r".*@akraya\.com",
+            r".*@lensa\.com",
+            r".*@legal\.io",
+            r".*@apple\.com",
+            r".*@workablemail\.com",
+            r".*@dice\.com",
+            r".*@myworkday\.com",
+            r".*@narwal\.ai"
+        ]
+
      
         self.junk_pattern = re.compile(
             r'^(no-?reply|auto(responder|bot)|.alert.|.noreply.|.*notifications?)@',
@@ -82,19 +100,26 @@ class MLRecruiterFilter:
         return email_match.group(1).lower() if email_match else ""
 
     def should_ignore_email(self, email: str) -> bool:
-        """Exact implementation of your specified function"""
+        """Main filter function"""
         email = email.lower().strip()
         if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-            return True  # Invalid email format
-            
+            return True  
+
+        if email in self.exact_email_blacklist:
+            return True
+
         local_part, domain = email.split("@", 1)
-        
+
         if any(kw in local_part for kw in self.blacklist_keywords):
             return True
-            
-        if domain in self.personal_domains:
+
+        if domain in self.personal_domains or domain in self.service_domains:
             return True
-            
+
+        for pattern in self.blacklist_regex_patterns:
+            if re.match(pattern, email):
+                return True
+
         return False
 
     def is_junk_email(self, from_header: str) -> bool:
@@ -103,16 +128,13 @@ class MLRecruiterFilter:
         if not email:
             return True
             
-        # Apply all filtering conditions exactly as specified
         if self.should_ignore_email(email):
             return True
             
-        # Additional service domain check
         local_part, domain = email.split("@", 1)
         if domain in self.service_domains:
             return True
             
-        # Regex pattern check
         if self.junk_pattern.match(email):
             return True
             

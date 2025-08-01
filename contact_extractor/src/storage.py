@@ -1,77 +1,78 @@
-import csv
-import json
-import os
-from datetime import datetime
 import logging
+import os
+import json
+from datetime import datetime
+import mysql.connector
+from dotenv import load_dotenv
+
+load_dotenv()  
 
 class StorageManager:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        # Compute absolute paths for data directory and files
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.data_dir = os.path.join(self.base_dir, 'data')
-        self.contacts_dir = os.path.join(self.data_dir, 'extracted_contacts')
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.data_dir = os.path.join(base_dir, 'data')
         self.last_run_path = os.path.join(self.data_dir, 'last_run.json')
-        # Ensure data directory exists, but do not create extracted_contacts here
         os.makedirs(self.data_dir, exist_ok=True)
 
-    def save_contacts(self, email_account: str, contacts: list):
-        print("CONTACTS RECEIVED FOR SAVING:", contacts)  
+        self.db_config = {
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'database': os.getenv('DB_NAME', 'your_database')
+        }
 
-        """Save contacts to a single CSV file (output.csv), skipping duplicates already saved.
-        Also, ensure 'source' field is set to the source email (email_account) if not present.
-        """
+    def save_contacts(self, email_account: str, contacts: list):
         if not contacts:
             self.logger.info(f"No contacts to save for {email_account}")
             return
 
-        output_csv = os.path.join(self.data_dir, 'output.csv')
-        file_exists = os.path.isfile(output_csv)
-
-        # --- Load existing emails for deduplication ---
-        existing_emails = set()
-        if file_exists:
-            try:
-                with open(output_csv, 'r', encoding='utf-8') as csvfile:
-                    reader = csv.DictReader(csvfile)
-                    for row in reader:
-                        email = (row['email'] or '').strip().lower()
-                        existing_emails.add(email)
-            except Exception as e:
-                self.logger.error(f"Error reading existing contacts for deduplication: {str(e)}")
-
         try:
-            with open(output_csv, 'a', newline='', encoding='utf-8') as csvfile:
-                fieldnames = [
-                    'full_name', 'email', 'phone', 'company_name', 
-                    'website', 'source_email', 'linkedin_id', 'extracted_date'
-                ]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                if not file_exists:
-                    writer.writeheader()
-                new_count = 0
-                for contact in contacts:
-                    email = (contact.get('email') or '').strip().lower()
-                    if not email:
-                        continue  # skip contacts without email
-                    if email in existing_emails:
-                        self.logger.info(f"Duplicate contact already saved, skipping: {email}")
-                        continue
-                    # Ensure 'source' field is set to the source email (email_account)
-                    if not contact.get('source'):
-                        contact['source'] = email_account.lower()
-                    if contact.get('phone'):
-                        contact['phone'] = "'" + contact['phone']
-                    contact['extracted_date'] = datetime.now().isoformat()
-                    writer.writerow(contact)
-                    existing_emails.add(email)
-                    new_count += 1
-            self.logger.info(f"Saved {new_count} new contacts to {output_csv}")
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+
+            insert_query = """
+                INSERT INTO vendor_contact_extracts (
+                    full_name, source_email, email, phone,
+                    linkedin_id, company_name, location,
+                    extraction_date, moved_to_vendor, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURDATE(), 0, NOW())
+                ON DUPLICATE KEY UPDATE
+                    phone=VALUES(phone), company_name=VALUES(company_name),
+                    linkedin_id=VALUES(linkedin_id), location=VALUES(location),
+                    moved_to_vendor=VALUES(moved_to_vendor)
+            """
+
+            new_count = 0
+            for contact in contacts:
+                if not contact.get('email'):
+                    continue
+
+                values = (
+                    contact.get('name', ''),
+                    contact.get('source', email_account).lower(),
+                    contact.get('email'),
+                    contact.get('phone', ''),
+                    contact.get('linkedin_id', ''),
+                    contact.get('company', ''),
+                    contact.get('location', ''),
+                )
+                cursor.execute(insert_query, values)
+                new_count += 1
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            self.logger.info(f"Inserted {new_count} contacts into database.")
+
+        except mysql.connector.Error as err:
+            self.logger.error(f"MySQL error: {err}")
         except Exception as e:
-            self.logger.error(f"Error saving contacts: {str(e)}")
+            self.logger.error(f"Unexpected error saving contacts: {str(e)}")
 
     def load_last_run(self):
-        """Load last run information"""
         try:
             if os.path.exists(self.last_run_path):
                 with open(self.last_run_path, 'r') as f:
@@ -82,14 +83,13 @@ class StorageManager:
             return {}
 
     def save_last_run(self, email_account: str, last_uid: str):
-        """Save last processed email UID"""
         try:
             data = self.load_last_run()
             data[email_account] = {
                 'last_uid': last_uid,
                 'last_run': datetime.now().isoformat()
             }
-            
+
             with open(self.last_run_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
