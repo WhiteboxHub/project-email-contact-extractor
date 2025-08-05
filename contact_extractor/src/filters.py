@@ -12,7 +12,7 @@ class MLRecruiterFilter:
         self._initialize_filter_lists()
 
     def _initialize_filter_lists(self):
-        """Initialize all filter patterns exactly as specified"""
+
         self.blacklist_keywords = {
             "noreply", "no-reply", "donotreply", "do-not-reply",
             "autoresponder", "mailer-daemon", "bounce", "autoemail",
@@ -22,7 +22,9 @@ class MLRecruiterFilter:
             "confirm", "newsletter", "subscribe", "unsubscribe",
             "bulk", "campaign", "ads", "advertise", "offers",
             "promotions", "jobs", "jobalerts", "careers", "hr",
-            "info", "contact", "noreplymail", "noreplies"
+            "info", "contact", "noreplymail", "noreplies",
+            "image", "team", "recruiting", "communications", "data",
+            "marketing", "customer", "enterprise"
         }
 
         self.personal_domains = {
@@ -35,63 +37,33 @@ class MLRecruiterFilter:
         self.service_domains = {
             "amazon.com", "google.com", "facebook.com", "linkedin.com",
             "github.com", "slack.com", "zoom.us", "twitter.com",
-            "microsoft.com", "apple.com"
+            "microsoft.com", "apple.com", "teamzoom@zoom.us", "ops@cluso.com"
         }
 
         self.exact_email_blacklist = {
-            "teamzoom@zoom.us", "ops@cluso.com", "recruiter@softquip.com",
+            "recruiter@softquip.com","e.linkedin.com"
             "requirements@gainamerica.net", "assistant@glider.ai",
+             "customercare", "linkedin.com" ,"dice.com", "myworkday.com", "narwal.ai",
             "good-people@mail.beehiiv.com", "echosign@echosign.com",
             "aggregated@lensa.com", "truthteam@email.truthsocial.com",
             "remove@greattechglobal.com", "username@narwal.ai.",
-            "wi3351252t@wipro.com"
+            "wi3351252t@wipro.com", "txt.voice.google.com",
+            "inmail", "dse", "email.shopify.com", "zrc-ptv", "ltxstudio",
+            "hello@v3.idibu.com",
+             "cube-hub.com", "akraya.com",
+            "lensa.com", "legal.io", "apple.com",
+            "workablemail.com"
         }
 
-        self.blacklist_regex_patterns = [
-            r"^image.*\.(png|jpg)@.*",
-            r"^team@.*",
-            r".*recruiting.*",
-            r".*communications.*",
-            r".*data@.*",
-            r".*marketing.*",
-            r".*customer.*",
-            r".*enterprise.*",
-            r".*@txt\.voice\.google\.com",
-            r"^inmail-.*",
-            r"^echosign@.*",
-            r"^dse_.*",
-            r".*@email\.shopify\.com",
-            r".*zrc-ptv.*",
-            r".*ltxstudio@.*",
-            r".*aggregated@.*",
-            r".*truthteam@.*",
-            r".*customercare@.*",
-            r".*hello@v3\.idibu\.com",
-            r".*@linkedin\.com",
-            r".*@e\.linkedin\.com",
-            r".*@cube-hub\.com",
-            r".*@akraya\.com",
-            r".*@lensa\.com",
-            r".*@legal\.io",
-            r".*@apple\.com",
-            r".*@workablemail\.com",
-            r".*@dice\.com",
-            r".*@myworkday\.com",
-            r".*@narwal\.ai"
-        ]
-
-     
         self.junk_pattern = re.compile(
             r'^(no-?reply|auto(responder|bot)|.alert.|.noreply.|.*notifications?)@',
             re.IGNORECASE
         )
 
     def _extract_clean_email(self, from_header: str) -> str:
-        """Robust email extraction from header"""
+
         if not from_header:
             return ""
-            
-       
         email_match = re.search(
             r'(?:<|\(|^)([\w\.-]+@[\w\.-]+)(?:>|\)|$)', 
             from_header,
@@ -100,7 +72,7 @@ class MLRecruiterFilter:
         return email_match.group(1).lower() if email_match else ""
 
     def should_ignore_email(self, email: str) -> bool:
-        """Main filter function"""
+
         email = email.lower().strip()
         if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
             return True  
@@ -116,8 +88,8 @@ class MLRecruiterFilter:
         if domain in self.personal_domains or domain in self.service_domains:
             return True
 
-        for pattern in self.blacklist_regex_patterns:
-            if re.match(pattern, email):
+        for black in self.exact_email_blacklist:
+            if black in email or domain == black or local_part.startswith(black):
                 return True
 
         return False
@@ -169,7 +141,7 @@ class MLRecruiterFilter:
         return filtered
 
     def extract_company_url(self, email: str) -> str:
-        """Your specified URL extraction logic"""
+
         email = email.lower().strip()
         
         if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
@@ -184,3 +156,4 @@ class MLRecruiterFilter:
             return None
             
         return f"https://{domain}"
+
