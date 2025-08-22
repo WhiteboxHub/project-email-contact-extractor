@@ -12,7 +12,6 @@ class MLRecruiterFilter:
         self._initialize_filter_lists()
 
     def _initialize_filter_lists(self):
-
         self.blacklist_keywords = {
             "noreply", "no-reply", "donotreply", "do-not-reply",
             "autoresponder", "mailer-daemon", "bounce", "autoemail",
@@ -24,7 +23,9 @@ class MLRecruiterFilter:
             "promotions", "jobs", "jobalerts", "careers", "hr",
             "info", "contact", "noreplymail", "noreplies",
             "image", "team", "recruiting", "communications", "data",
-            "marketing", "customer", "enterprise"
+            "marketing", "customer", "enterprise", "inmail", "dse",
+            "zrc-ptv", "ltxstudio", "aggregated", "truthteam",
+            "customercare", "echosign", "hello"
         }
 
         self.personal_domains = {
@@ -37,28 +38,25 @@ class MLRecruiterFilter:
         self.service_domains = {
             "amazon.com", "google.com", "facebook.com", "linkedin.com",
             "github.com", "slack.com", "zoom.us", "twitter.com",
-            "microsoft.com", "apple.com", "teamzoom@zoom.us", "ops@cluso.com"
+            "microsoft.com", "apple.com", "workablemail.com", "dice.com",
+            "myworkday.com", "narwal.ai", "txt.voice.google.com", "email.shopify.com"
         }
 
         self.exact_email_blacklist = {
-            "recruiter@softquip.com","e.linkedin.com"
+            "teamzoom@zoom.us", "ops@cluso.com", "recruiter@softquip.com",
             "requirements@gainamerica.net", "assistant@glider.ai",
-             "customercare", "linkedin.com" ,"dice.com", "myworkday.com", "narwal.ai",
             "good-people@mail.beehiiv.com", "echosign@echosign.com",
             "aggregated@lensa.com", "truthteam@email.truthsocial.com",
             "remove@greattechglobal.com", "username@narwal.ai.",
-            "wi3351252t@wipro.com", "txt.voice.google.com",
-            "inmail", "dse", "email.shopify.com", "zrc-ptv", "ltxstudio",
-            "hello@v3.idibu.com",
-             "cube-hub.com", "akraya.com",
-            "lensa.com", "legal.io", "apple.com",
-            "workablemail.com"
+            "wi3351252t@wipro.com", "hello@v3.idibu.com",
+            "e.linkedin.com", 
         }
 
         self.junk_pattern = re.compile(
-            r'^(no-?reply|auto(responder|bot)|.alert.|.noreply.|.*notifications?)@',
+            r'^(no-?reply|auto(responder|bot)|.*alert.*|.*noreply.*|.*notifications?)@',
             re.IGNORECASE
         )
+
 
     def _extract_clean_email(self, from_header: str) -> str:
 
@@ -126,12 +124,18 @@ class MLRecruiterFilter:
         
         for email_data in emails:
             try:
-                from_header = email_data['message'].get('From', '')
-                subject = email_data['message'].get('Subject', '')
-                
+                msg = email_data['message']
+                from_header = msg.get('From', '')
+                subject = msg.get('Subject', '')
+
+                # ✅ If it's a calendar invite, bypass ML filter
+                if any(part.get_content_type() == "text/calendar" for part in msg.walk()):
+                    filtered.append(email_data)
+                    continue
+
                 if not self.is_junk_email(from_header):
                     body = extractor.clean_body(
-                        extractor._get_email_body(email_data['message'])
+                        extractor._get_email_body(msg)
                     )
                     if self.is_recruiter(subject, body, from_header):
                         filtered.append(email_data)
@@ -156,4 +160,6 @@ class MLRecruiterFilter:
             return None
             
         return f"https://{domain}"
+
+
 

@@ -3,11 +3,10 @@ from bs4 import BeautifulSoup
 import phonenumbers
 import re
 from email.utils import parseaddr
+from icalendar import Calendar
 
 class NERContactExtractor:
-    #def __init__(self, model="en_core_web_sm"):
-
-    def __init__(self, model="en_core_web_trf"):
+    def __init__(self, model="en_core_web_sm"):
         self.nlp = spacy.load(model)
         self.email_regex = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
         self.linkedin_regex = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[a-zA-Z0-9\-_]+")
@@ -16,29 +15,28 @@ class NERContactExtractor:
     def clean_body(self, html):
         soup = BeautifulSoup(html, "html.parser")
         text = soup.get_text(separator="\n")
-        # Remove quoted replies like "On Jan 1, 2023, John wrote:"
         text = re.split(r"On .+ wrote:", text)[0]
         return text.strip()
 
     def extract_contacts(self, email_message, source_email=None):
+        # Try to extract calendar email first
+        calendar_email = self._extract_calendar_email(email_message)
+
         raw_body = self._get_email_body(email_message)
         body = self.clean_body(raw_body)
         doc = self.nlp(body)
 
         name = self._extract_name(doc, body, email_message=email_message)
-        email = self._extract_email(body)
+        email = calendar_email or self._extract_email(body)
         phone = self._extract_phone(body)
         linkedin = self._extract_linkedin(body)
         sender_email = email_message.get("From")
         company = self._extract_company(doc, body, email=email, linkedin=linkedin, sender_email=sender_email)
-        website = self._extract_website(body)
-
         return {
             "name": name,
             "email": email,
             "phone": phone,
             "company": company,
-            "website": website,
             "linkedin_id": linkedin,
             "source": source_email if source_email else None
         }
@@ -51,9 +49,66 @@ class NERContactExtractor:
         else:
             return email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
         return ""
+    def _extract_calendar_email(self, email_message):
+        """Extract ORGANIZER and ATTENDEE emails from calendar invites (regex only)."""
+        emails = set()
+
+        if email_message.is_multipart():
+            for part in email_message.walk():
+                if part.get_content_type() == "text/calendar":
+                    try:
+                        payload = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+
+                        # Extract ORGANIZER
+                        for match in re.findall(r"ORGANIZER.*mailto:([^ \r\n]+)", payload, re.IGNORECASE):
+                            emails.add(match.lower())
+
+                        # Extract ATTENDEE(s)
+                        for match in re.findall(r"ATTENDEE.*mailto:([^ \r\n]+)", payload, re.IGNORECASE):
+                            emails.add(match.lower())
+
+                    except Exception as e:
+                        print("Calendar parsing error:", e)
+
+        # If still nothing, try headers
+        if not emails:
+            for header in ["Sender", "Reply-To", "From"]:
+                if header in email_message:
+                    _, addr = parseaddr(email_message.get(header))
+                    if addr and "noreply" not in addr.lower():
+                        emails.add(addr.lower())
+
+        return list(emails) if emails else None
+
+
+    def extract_contacts(self, email_message, source_email=None):
+        calendar_emails = self._extract_calendar_email(email_message)
+
+        raw_body = self._get_email_body(email_message)
+        body = self.clean_body(raw_body)
+        doc = self.nlp(body)
+
+        name = self._extract_name(doc, body, email_message=email_message)
+
+        # pick first calendar email if available, otherwise fallback to normal
+        email = (calendar_emails[0] if calendar_emails else None) or self._extract_email(body)
+
+        phone = self._extract_phone(body)
+        linkedin = self._extract_linkedin(body)
+        sender_email = email_message.get("From")
+        company = self._extract_company(doc, body, email=email, linkedin=linkedin, sender_email=sender_email)
+
+        return {
+            "name": name,
+            "email": email,
+            "calendar_emails": calendar_emails,  # keep full list too
+            "phone": phone,
+            "company": company,
+            "linkedin_id": linkedin,
+            "source": source_email if source_email else None
+        }
 
     def _extract_name(self, doc, text, email_message=None):
-        # 1. Try From header
         if email_message:
             from_header = email_message.get("From")
             if from_header:
@@ -61,12 +116,10 @@ class NERContactExtractor:
                 if name and len(name.split()) <= 3:
                     return name.strip()
 
-        # 2. Try NER
         for ent in doc.ents:
             if ent.label_ == "PERSON" and len(ent.text.split()) <= 3:
                 return ent.text.strip()
 
-        # 3. Signature fallback
         match = re.search(r"(Thanks|Regards|Best),?\s*\n([A-Z][a-z]+ [A-Z][a-z]+)", text)
         if match:
             return match.group(2).strip()
@@ -77,8 +130,8 @@ class NERContactExtractor:
         matches = self.email_regex.findall(text)
         for email in matches:
             if not any(kw in email.lower() for kw in ["noreply", "donotreply", "autobot", "support"]):
-                return email
-        return matches[0] if matches else None
+                return email.lower()
+        return matches[0].lower() if matches else None
 
     def _extract_phone(self, text):
         for match in phonenumbers.PhoneNumberMatcher(text, "US"):
@@ -89,24 +142,44 @@ class NERContactExtractor:
         match = self.linkedin_regex.search(text)
         return match.group(0) if match else None
 
+    class YourClass:
+        def __init__(self):
+            self.linkedin_regex = re.compile(
+                r'https?://(?:www\.)?linkedin\.com/in/([A-Za-z0-9-]+)',
+                re.IGNORECASE
+            )
+
     def _extract_company(self, doc, text, email=None, linkedin=None, sender_email=None):
-        # 1. Try ORG entity
+        ORG_BLACKLIST = {
+            "aws", "linkedin", "talent acquisition", "team", "support", "group",
+            "data analytics", "insights", "technologies", "solutions", "job title"
+        }
+
+        def is_valid_company(org):
+            clean = org.lower().strip()
+            return clean not in ORG_BLACKLIST and len(clean.split()) <= 5
+
         for ent in doc.ents:
-            if ent.label_ == "ORG":
+            if ent.label_ == "ORG" and is_valid_company(ent.text):
                 return ent.text.strip()
 
-        # 2. Signature line fallback
-        match = re.search(r"\n([A-Z][a-zA-Z&.\s]+)(Inc|LLC|Ltd|Technologies|Solutions)?", text)
-        if match:
-            return match.group(1).strip()
+        signature_lines = text.strip().splitlines()
+        for line in signature_lines:
+            if any(suffix in line for suffix in ["Inc", "LLC", "Ltd", "Corporation", "Corp", "Technologies"]):
+                line_clean = line.strip().replace(",", "")
+                if is_valid_company(line_clean):
+                    return line_clean
 
-        # 3. From email domain
         if sender_email and '@' in sender_email:
             domain = sender_email.split('@')[1].split('.')[0]
-            if domain.lower() not in ["gmail", "yahoo", "hotmail", "outlook", "protonmail"]:
+            if domain.lower() not in ["gmail", "yahoo", "hotmail", "outlook", "protonmail", "aws"]:
                 return domain.replace("-", " ").title()
 
-        # 4. LinkedIn slug fallback
+        if email and "@" in email:
+            domain = email.split('@')[1].split('.')[0]
+            if domain.lower() not in ["gmail", "yahoo", "hotmail", "outlook", "protonmail", "aws"]:
+                return domain.replace("-", " ").title()
+
         if linkedin:
             match = re.search(r"linkedin\.com/in/([a-zA-Z0-9\-]+)", linkedin)
             if match:
@@ -114,17 +187,4 @@ class NERContactExtractor:
                 if len(slug_parts) >= 2:
                     return slug_parts[-1].capitalize()
 
-        # 5. Email domain fallback
-        if email and "@" in email:
-            domain = email.split('@')[1].split('.')[0]
-            if domain.lower() not in ["gmail", "yahoo", "hotmail", "outlook", "protonmail"]:
-                return domain.replace("-", " ").title()
-
-        return None
-
-    def _extract_website(self, text):
-        urls = self.url_pattern.findall(text)
-        for url in urls:
-            if "linkedin.com" not in url and "unsubscribe" not in url:
-                return url
         return None
