@@ -32,7 +32,7 @@ class MLRecruiterFilter:
             "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
             "aol.com", "icloud.com", "mail.com", "live.com", "msn.com",
             "protonmail.com", "zoho.com", "yandex.com", "gmx.com",
-            "qq.com", "me.com", "pm.me"
+            "qq.com", "me.com", "pm.me" ,"jobleads.com"
         }
 
         self.service_domains = {
