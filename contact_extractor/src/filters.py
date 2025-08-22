@@ -143,6 +143,32 @@ class MLRecruiterFilter:
                 self.logger.error(f"Error processing email: {str(e)}")
                 
         return filtered
+    
+    def filter_non_junk_emails(self, emails: List[Dict], extractor) -> List[Dict]:
+        """
+        Extract all non-junk emails (real person/company/vendor emails).
+        Skips obvious junk/system/blacklist, but does NOT require recruiter classification.
+        """
+        filtered = []
+        for email_data in emails:
+            try:
+                msg = email_data['message']
+                from_header = msg.get('From', '')
+
+                # Skip junk senders
+                if self.is_junk_email(from_header):
+                    continue
+
+                # Keep everything else (real companies, vendors, recruiters, etc.)
+                body = extractor.clean_body(
+                    extractor._get_email_body(msg)
+                )
+                email_data['clean_body'] = body
+                filtered.append(email_data)
+
+            except Exception as e:
+                self.logger.error(f"Error processing non-junk email: {str(e)}")
+        return filtered
 
     def extract_company_url(self, email: str) -> str:
 
