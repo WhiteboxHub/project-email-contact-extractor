@@ -19,7 +19,6 @@ class NERContactExtractor:
         return text.strip()
 
     def extract_contacts(self, email_message, source_email=None):
-        # Try to extract calendar email first
         calendar_email = self._extract_calendar_email(email_message)
 
         raw_body = self._get_email_body(email_message)
@@ -59,18 +58,15 @@ class NERContactExtractor:
                     try:
                         payload = part.get_payload(decode=True).decode("utf-8", errors="ignore")
 
-                        # Extract ORGANIZER
                         for match in re.findall(r"ORGANIZER.*mailto:([^ \r\n]+)", payload, re.IGNORECASE):
                             emails.add(match.lower())
 
-                        # Extract ATTENDEE(s)
                         for match in re.findall(r"ATTENDEE.*mailto:([^ \r\n]+)", payload, re.IGNORECASE):
                             emails.add(match.lower())
 
                     except Exception as e:
                         print("Calendar parsing error:", e)
-
-        # If still nothing, try headers
+  
         if not emails:
             for header in ["Sender", "Reply-To", "From"]:
                 if header in email_message:
@@ -90,7 +86,6 @@ class NERContactExtractor:
 
         name = self._extract_name(doc, body, email_message=email_message)
 
-        # pick first calendar email if available, otherwise fallback to normal
         email = (calendar_emails[0] if calendar_emails else None) or self._extract_email(body)
 
         phone = self._extract_phone(body)
@@ -101,7 +96,7 @@ class NERContactExtractor:
         return {
             "name": name,
             "email": email,
-            "calendar_emails": calendar_emails,  # keep full list too
+            "calendar_emails": calendar_emails, 
             "phone": phone,
             "company": company,
             "linkedin_id": linkedin,
@@ -140,7 +135,9 @@ class NERContactExtractor:
 
     def _extract_linkedin(self, text):
         match = self.linkedin_regex.search(text)
-        return match.group(0) if match else None
+        if match:
+            return match.group(1).lower().strip("/")
+        return None    
 
     class YourClass:
         def __init__(self):
@@ -188,3 +185,5 @@ class NERContactExtractor:
                     return slug_parts[-1].capitalize()
 
         return None
+
+
