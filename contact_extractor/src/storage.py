@@ -5,7 +5,7 @@ from datetime import datetime
 import mysql.connector
 from dotenv import load_dotenv
 
-load_dotenv()  
+load_dotenv()
 
 class StorageManager:
     def __init__(self):
@@ -29,43 +29,60 @@ class StorageManager:
 
         try:
             conn = mysql.connector.connect(**self.db_config)
-            cursor = conn.cursor()
-
-            insert_query = """
-                INSERT INTO vendor_contact_extracts (
-                    full_name, source_email, email, phone,
-                    linkedin_id, company_name, location,
-                    extraction_date, moved_to_vendor, created_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, CURDATE(), 0, NOW())
-                ON DUPLICATE KEY UPDATE
-                    phone=VALUES(phone), company_name=VALUES(company_name),
-                    linkedin_id=VALUES(linkedin_id), location=VALUES(location),
-                    moved_to_vendor=VALUES(moved_to_vendor)
-            """
+            cursor = conn.cursor(dictionary=True)
 
             new_count = 0
             for contact in contacts:
-                if not contact.get('email'):
-                    continue
+                email = contact.get('email')
+                linkedin = contact.get('linkedin_id')
+                name = contact.get('name', '')
+                phone = contact.get('phone', '')
+                company = contact.get('company', '')
+                location = contact.get('location', '')
+                source = contact.get('source', email_account).lower()
 
-                values = (
-                    contact.get('name', ''),
-                    contact.get('source', email_account).lower(),
-                    contact.get('email'),
-                    contact.get('phone', ''),
-                    contact.get('linkedin_id', ''),
-                    contact.get('company', ''),
-                    contact.get('location', ''),
-                )
-                cursor.execute(insert_query, values)
+       
+                if email:
+                    cursor.execute("SELECT * FROM vendor_contact_extracts WHERE email = %s", (email,))
+                    row = cursor.fetchone()
+                    if row:
+                        if not row["linkedin_id"] and linkedin:
+                            cursor.execute("""
+                                UPDATE vendor_contact_extracts
+                                SET linkedin_id=%s, full_name=%s, phone=%s,
+                                    company_name=%s, location=%s, source_email=%s
+                                WHERE id=%s
+                            """, (linkedin, name, phone, company, location, source, row["id"]))
+                            conn.commit()
+                        continue  
+
+
+                if linkedin:
+                    cursor.execute("SELECT * FROM vendor_contact_extracts WHERE linkedin_id = %s", (linkedin,))
+                    row = cursor.fetchone()
+                    if row:
+                        if not row["email"] and email:
+                            cursor.execute("""
+                                UPDATE vendor_contact_extracts
+                                SET email=%s, full_name=%s, phone=%s,
+                                    company_name=%s, location=%s, source_email=%s
+                                WHERE id=%s
+                            """, (email, name, phone, company, location, source, row["id"]))
+                            conn.commit()
+                        continue 
+
+    
+                cursor.execute("""
+                    INSERT INTO vendor_contact_extracts
+                    (full_name, source_email, email, phone, linkedin_id, company_name, location, extraction_date, moved_to_vendor, created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,CURDATE(),0,NOW())
+                """, (name, source, email, phone, linkedin, company, location))
+                conn.commit()
                 new_count += 1
 
-            conn.commit()
             cursor.close()
             conn.close()
-
-            self.logger.info(f"Inserted {new_count} contacts into database.")
+            self.logger.info(f"Inserted {new_count} new contacts into database.")
 
         except mysql.connector.Error as err:
             self.logger.error(f"MySQL error: {err}")
