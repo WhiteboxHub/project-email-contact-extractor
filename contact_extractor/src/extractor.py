@@ -125,11 +125,8 @@ class NERContactExtractor:
         return None
 
     def _extract_email(self, text):
-        matches = self.email_regex.findall(text)
-        for email in matches:
-            if not any(kw in email.lower() for kw in ["noreply", "donotreply", "autobot", "support"]):
-                return email.lower()
-        return matches[0].lower() if matches else None
+        match = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
+        return match.group(0) if match else None
 
     def _extract_phone(self, text):
         for match in phonenumbers.PhoneNumberMatcher(text, "US"):
