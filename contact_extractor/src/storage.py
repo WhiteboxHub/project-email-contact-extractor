@@ -30,8 +30,8 @@ class StorageManager:
         try:
             conn = mysql.connector.connect(**self.db_config)
             cursor = conn.cursor(dictionary=True)
-
             new_count = 0
+
             for contact in contacts:
                 email = contact.get('email')
                 linkedin = contact.get('linkedin_id')
@@ -41,7 +41,6 @@ class StorageManager:
                 location = contact.get('location', '')
                 source = contact.get('source', email_account).lower()
 
-       
                 if email:
                     cursor.execute("SELECT * FROM vendor_contact_extracts WHERE email = %s", (email,))
                     row = cursor.fetchone()
@@ -54,8 +53,7 @@ class StorageManager:
                                 WHERE id=%s
                             """, (linkedin, name, phone, company, location, source, row["id"]))
                             conn.commit()
-                        continue  
-
+                        continue
 
                 if linkedin:
                     cursor.execute("SELECT * FROM vendor_contact_extracts WHERE linkedin_id = %s", (linkedin,))
@@ -69,9 +67,8 @@ class StorageManager:
                                 WHERE id=%s
                             """, (email, name, phone, company, location, source, row["id"]))
                             conn.commit()
-                        continue 
+                        continue
 
-    
                 cursor.execute("""
                     INSERT INTO vendor_contact_extracts
                     (full_name, source_email, email, phone, linkedin_id, company_name, location, extraction_date, moved_to_vendor, created_at)
@@ -89,6 +86,31 @@ class StorageManager:
         except Exception as e:
             self.logger.error(f"Unexpected error saving contacts: {str(e)}")
 
+    
+    def log_email_activity(self, candidate_email, emails_count):
+        """
+        Logs the number of emails processed for a candidate.
+        Inserts new row if doesn't exist, increments emails_read if exists.
+        """
+        try:
+            conn = mysql.connector.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO email_activity_log (candidate_marketing_id, email, emails_read, activity_date)
+                SELECT id, %s, %s, CURDATE()
+                FROM candidate_marketing
+                WHERE email=%s
+                ON DUPLICATE KEY UPDATE
+                    emails_read = emails_read + VALUES(emails_read),
+                    last_updated = CURRENT_TIMESTAMP
+            """, (candidate_email, emails_count, candidate_email))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            self.logger.info(f"Logged {emails_count} emails for {candidate_email} in email_activity_log")
+        except Exception as e:
+            self.logger.error(f"Failed to log email activity: {e}")
+    
     def load_last_run(self):
         try:
             if os.path.exists(self.last_run_path):
@@ -111,3 +133,4 @@ class StorageManager:
                 json.dump(data, f, indent=2)
         except Exception as e:
             self.logger.error(f"Error saving last run data: {str(e)}")
+
