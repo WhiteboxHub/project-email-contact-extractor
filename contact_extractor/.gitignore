@@ -11,3 +11,4 @@ src/__pycache__/
 data/
 models/
 src/generate_labeled_emails.py
+.env
