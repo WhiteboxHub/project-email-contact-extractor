@@ -188,4 +188,3 @@ class MLRecruiterFilter:
         return f"https://{domain}"
 
 
-

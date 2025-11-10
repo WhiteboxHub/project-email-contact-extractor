@@ -133,4 +133,3 @@ class StorageManager:
                 json.dump(data, f, indent=2)
         except Exception as e:
             self.logger.error(f"Error saving last run data: {str(e)}")
-
