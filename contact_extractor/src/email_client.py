@@ -32,32 +32,49 @@ class EmailClient:
         except Exception as e:
             self.logger.error(f"Error disconnecting {self.email}: {str(e)}")
 
-    def fetch_emails(self, since_date=None, since_uid=None, batch_size=150):
+    def fetch_emails(self, since_date=None, since_uid=None, batch_size=100, start_index=0):
+        """
+        Fetch emails in batches for efficiency.
+        Returns a tuple: (emails, next_start_index)
+        """
         if not self.mail:
             if not self.connect():
-                return []
+                return [], None
 
         try:
             # Search criteria
-            criteria = "ALL"
-            if since_date:
-                criteria = f'(SINCE "{since_date}")'
-            elif since_uid:
-                # Only fetch emails with UID > last_uid
-                criteria = f'(UID {int(since_uid) + 1}:*)'
+            # Update: fetch after last UID, not including it again
+            if since_uid:
+                # since_uid may be str, ensure int
+                try:
+                    next_uid = int(since_uid) + 1
+                except Exception:
+                    next_uid = since_uid  # fallback, but should be int
+                criteria = f'(UID {next_uid}:*)'
+            else:
+                criteria = "ALL"
 
-            status, messages = self.mail.search(None, criteria)
+            # status, messages = self.mail.search(None, criteria)
+            status, messages = self.mail.uid('search', None, criteria)
+
             if status != 'OK':
-                return []
+                return [], None
 
             email_ids = messages[0].split()
-            # Sort UIDs in ascending order (oldest to newest)
-            email_ids = sorted(email_ids, key=lambda x: int(x))
-            # Take the first batch_size emails (oldest first)
-            batch_email_ids = email_ids[:batch_size]
+            total_emails = len(email_ids)
+            if total_emails == 0 or start_index >= total_emails:
+                return [], None
+
+            # Batch slicing
+            end_index = min(start_index + batch_size, total_emails)
+            batch_ids = email_ids[-end_index: -start_index] if start_index > 0 else email_ids[-end_index:]
+            batch_ids = list(reversed(batch_ids))  # newest first
+
             emails = []
-            for email_id in batch_email_ids:
-                status, msg_data = self.mail.fetch(email_id, '(RFC822)')
+            for email_id in batch_ids:
+                # 
+                status, msg_data = self.mail.uid('fetch', email_id, '(RFC822)')
+
                 if status != 'OK':
                     continue
                 raw_email = msg_data[0][1]
@@ -68,10 +85,11 @@ class EmailClient:
                     'raw': raw_email
                 })
 
-            return emails
+            next_start_index = end_index if end_index < total_emails else None
+            return emails, next_start_index
         except Exception as e:
             self.logger.error(f"Error fetching emails for {self.email}: {str(e)}")
-            return []
+            return [], None
 
     @staticmethod
     def clean_text(text):
